@@ -1,8 +1,9 @@
 import NDK, { NDKUser } from "@nostr-dev-kit/ndk";
 import { areServersEqual, getServersFromServerListEvent, USER_BLOSSOM_SERVER_LIST_KIND } from "blossom-client-sdk";
-import { publishBlossomServerList } from "./nostr.js";
 import debug from "debug";
+
 import { BLOSSOM_SERVERS } from "./env.js";
+import { publishBlossomServerList } from "./nostr.js";
 
 const log = debug("blossom");
 

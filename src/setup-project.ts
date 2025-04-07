@@ -1,11 +1,11 @@
 import { bytesToHex } from "@noble/hashes/utils";
-import NDK, { NDKKind, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import debug from "debug";
-import { ProjectData, readProjectFile, writeProjectFile } from "./config.js";
+import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
+import autocomplete from "inquirer-autocomplete-standalone";
 import { nip19 } from "nostr-tools";
 import inquirer from "inquirer";
-import autocomplete from "inquirer-autocomplete-standalone";
-import { RELAY_DISCOVERY_RELAYS } from "./env.js";
+import debug from "debug";
+
+import { ProjectData, readProjectFile, writeProjectFile } from "./config.js";
 import { fetchNip66ListOfRelayUrls } from "./nostr.js";
 
 const log = debug("setup-project");
@@ -31,8 +31,6 @@ const popularBlossomServers = [
   "https://cdn.satellite.earth",
   "https://files.v0l.io",
 ];
-
-
 
 async function selectUrls(promptMessage: string, initialUrls: string[]): Promise<string[]> {
   let urls: string[] = [...initialUrls]; // Clone the initial URLs list
@@ -123,7 +121,7 @@ async function onboarding(): Promise<void> {
     message: "3. Web site or project description:",
   });
 
-  console.log('Looking for public relays...');
+  console.log("Looking for public relays...");
   const knownRelays = await knownRelaysPromise;
   const relays = await selectUrls("4. NOSTR relay URLs:", knownRelays);
 
@@ -133,10 +131,7 @@ async function onboarding(): Promise<void> {
     privateKey,
     relays,
     servers: servers,
-    profile: {
-      name: projectName,
-      about: projectAbout,
-    },
+    profile: { name: projectName, about: projectAbout },
     publishProfile: projectName.length > 0 || projectAbout.length > 0,
     publishServerList: true,
     publishRelayList: true,
@@ -145,7 +140,6 @@ async function onboarding(): Promise<void> {
 }
 
 export async function setupProject(): Promise<ProjectData> {
-
   let projectData = readProjectFile();
   if (!projectData) {
     console.log("nsite-cli: No existing project configuration found. Setting up a new one:");

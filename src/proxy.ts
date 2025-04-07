@@ -1,5 +1,6 @@
 import { ProxyAgent } from "proxy-agent";
 import { PacProxyAgent } from "pac-proxy-agent";
+
 import { I2P_PROXY, PAC_PROXY, TOR_PROXY } from "./env.js";
 
 function buildPacURI() {

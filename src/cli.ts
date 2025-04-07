@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 import "./polyfill.js";
-import { Command } from "commander";
-import { broadcastRelayList, listRemoteFiles as findRemoteFiles, Profile, publishProfile } from "./nostr.js";
-import { compareFiles as compareFileLists, getLocalFiles as findAllLocalFiles } from "./files.js";
-import { processUploads } from "./upload.js";
+
 import NDK, { NDKEvent, NDKPrivateKeySigner, NDKUser } from "@nostr-dev-kit/ndk";
-import { NOSTR_PRIVATE_KEY, NOSTR_RELAYS } from "./env.js";
-import { nip19 } from "nostr-tools";
 import { BlossomClient, EventTemplate, SignedEvent } from "blossom-client-sdk";
-import path from "path";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { readProjectFile } from "./config.js";
+import { Command } from "commander";
 import debug from "debug";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { copyFile } from "fs/promises";
+import { nip19 } from "nostr-tools";
+import path from "path";
+
 import { findBlossomServers } from "./blossom.js";
+import { colors, formatFileStatus } from "./colors.js";
+import { readProjectFile } from "./config.js";
+import { NOSTR_PRIVATE_KEY, NOSTR_RELAYS } from "./env.js";
+import { compareFiles as compareFileLists, getLocalFiles as findAllLocalFiles } from "./files.js";
+import { broadcastRelayList, listRemoteFiles as findRemoteFiles, Profile, publishProfile } from "./nostr.js";
 import { setupProject } from "./setup-project.js";
 import { FileList } from "./types.js";
-import { copyFile } from "fs/promises";
+import { processUploads } from "./upload.js";
 
 const log = debug("nsite");
 const logSign = debug("nsite:sign");
@@ -42,9 +45,7 @@ async function initNdk(privateKey: string, relays: string[] = []): Promise<NDKUs
   }
 
   log("Using relays:", uniqueRelays.join(", "));
-  ndk = new NDK({
-    explicitRelayUrls: uniqueRelays,
-  });
+  ndk = new NDK({ explicitRelayUrls: uniqueRelays });
 
   let user: NDKUser;
   if (privateKey.startsWith("npub1")) {
@@ -60,7 +61,6 @@ async function initNdk(privateKey: string, relays: string[] = []): Promise<NDKUs
     const signer = new NDKPrivateKeySigner(privateKey);
     signer.blockUntilReady();
     user = await signer.user();
-    // console.log(`Using npub: ${user.npub}`);
     ndk.signer = signer;
   }
   await ndk.connect();
@@ -74,7 +74,7 @@ function logFiles(files: FileList, options: { verbose: boolean }) {
       files
         .map((f) => {
           const date = f.changedAt ? new Date(f.changedAt * 1000).toISOString().slice(0, 19).replace("T", " ") : "-";
-          return `${f.sha256}\t${date}\t${f.remotePath}`;
+          return `${f.sha256}\t${date}\t${colors.filePath(f.remotePath)}`;
         })
         .join("\n"),
     );
@@ -96,6 +96,7 @@ program
   .option("-k, --privatekey <nsec>", "The private key (nsec/hex) to use for signing.", undefined)
   .option("-p, --purge", "Delete online file events that are not used anymore.", false)
   .option("-v, --verbose", "Verbose output, i.e. print lists of files uploaded.")
+  .option("-c, --concurrency <number>", "Number of concurrent uploads (default: 5)", "5")
   .option("--publish-server-list", "Publish the list of blossom servers (Kind 10063).", false)
   .option("--publish-relay-list", "Publish the list of NOSTR relays (Kind 10002).", false)
   .option("--publish-profile", "Publish the app profile for the npub (Kind 0).", false)
@@ -112,6 +113,7 @@ program
         relays?: string;
         privatekey?: string;
         fallback?: string;
+        concurrency?: string;
         publishServerList: boolean;
         publishRelayList: boolean;
         publishProfile: boolean;
@@ -128,11 +130,11 @@ program
       const user = await initNdk(privateKey, [...(projectData?.relays || []), ...(options.relays?.split(",") || [])]);
 
       if (!ndk) return;
-      console.log("Upload for user:      ", user.npub);
+      console.log(`Upload for user:      ${colors.emphasis(user.npub)}`);
 
       const pool = ndk.outboxPool || ndk.pool;
       const relayUrls = [...pool.relays.values()].map((r) => r.url);
-      console.log("Using relays:         ", relayUrls.join(", "));
+      console.log(`Using relays:         ${colors.emphasis(relayUrls.join(", "))}`);
 
       if (options.publishRelayList || projectData?.publishRelayList) {
         console.log("Publishing relay list (Kind 10002)...");
@@ -143,13 +145,7 @@ program
         // TODO check if any profile settings have changed!?
         console.log("Publishing profile (Kind 0)...");
         const { name, about, nip05, picture } = projectData?.profile;
-        await publishProfile(ndk, {
-          name,
-          display_name: name,
-          about,
-          nip05,
-          picture,
-        } as Profile);
+        await publishProfile(ndk, { name, display_name: name, about, nip05, picture } as Profile);
       }
 
       try {
@@ -172,16 +168,16 @@ program
         if (localFiles.length == 0) throw new Error(`No files found in local source folder ${fileOrFolder}.`);
 
         // TODO show file size for all files
-        console.log(`${localFiles.length} files found locally in ${fileOrFolder}`);
+        console.log(`${colors.count(localFiles.length)} files found locally in ${colors.filePath(fileOrFolder)}`);
         logFiles(localFiles, options);
 
         const onlineFiles = await findRemoteFiles(ndk, user.pubkey);
-        console.log(`${onlineFiles.length} files available online.`);
+        console.log(`${colors.count(onlineFiles.length)} files available online.`);
         logFiles(onlineFiles, options);
 
         const { toTransfer, existing, toDelete } = await compareFileLists(localFiles, onlineFiles);
         console.log(
-          `${toTransfer.length} new files to upload, ${existing.length} files unchanged, ${toDelete.length} files to delete online.`,
+          `${colors.count(toTransfer.length)} new files to upload, ${colors.count(existing.length)} files unchanged, ${colors.count(toDelete.length)} files to delete online.`,
         );
 
         if (options.force) {
@@ -190,7 +186,9 @@ program
         }
 
         if (toTransfer.length > 0) {
-          await processUploads(ndk, toTransfer, blossomServers, signEventTemplate);
+          await processUploads(ndk, toTransfer, blossomServers, signEventTemplate, {
+            concurrency: options.concurrency ? parseInt(options.concurrency, 10) : 5,
+          });
         }
         logFiles(toTransfer, options);
 
@@ -203,29 +201,35 @@ program
                 try {
                   // TODO how can we make sure we are not deleting blobs that are
                   // used otherwise!?
-                  console.log(`Deleting blob ${file.sha256} from server ${s}.`);
+                  console.log(
+                    `${colors.error("Deleting")} blob ${colors.filePath(file.sha256)} from server ${colors.emphasis(s)}.`,
+                  );
                   await BlossomClient.deleteBlob(s, file.sha256, { auth: deleteAuth });
                 } catch (e) {
-                  console.error(`Error deleting blob ${file.sha256} from server ${s}`, e);
+                  console.error(`Error deleting blob ${file.sha256} from server ${s}`);
                 }
               }
 
               try {
-                console.log(`Deleting event ${file.event?.id} from the relays.`);
+                console.log(
+                  `${colors.error("Deleting")} event ${colors.filePath(file.event?.id || "")} from the relays.`,
+                );
                 const deletionEvent = await file.event.delete("File deletion through sync with nsite-cli.", true);
                 log(`Published deletion event ${deletionEvent.id}`);
               } catch (e) {
-                console.error(`Error deleting event ${file.event?.id} from the relays.`, e);
+                console.error(`Error deleting event ${file.event?.id} from the relays.`);
               }
             }
           }
         }
 
-        console.log(`The website is now available on any nsite gateway, e.g.: https://${user.npub}.nsite.lol`);
+        console.log(
+          `\n${colors.header("Success!")} The website is now available on any nsite gateway, e.g.: ${colors.url(`https://${user.npub}.nsite.lol`)}`,
+        );
 
         process.exit(0);
       } catch (error) {
-        console.error("Failed to fetch online files:", error);
+        console.error(`${colors.error("Failed to fetch online files:")} ${error}`);
         process.exit(1);
       }
     },
@@ -251,7 +255,7 @@ program
 
     if (!ndk) return;
 
-    log("Listing web content for " + (npub || user.npub));
+    console.log(`${colors.header("Listing web content for:")} ${colors.emphasis(npub || user.npub)}`);
     const onlineFiles = await findRemoteFiles(ndk, optionalPubKey || user.pubkey);
     logFiles(onlineFiles, { verbose: true });
 
@@ -281,19 +285,20 @@ program
       const blossomServers = await findBlossomServers(ndk, user, false, [...(options.servers?.split(",") || [])]);
 
       const optionalPubKey = npub && (nip19.decode(npub).data as string);
-      log("Downloading web content for " + (npub || user.npub));
+      console.log(`${colors.header("Downloading web content for:")} ${colors.emphasis(npub || user.npub)}`);
       const onlineFiles = await findRemoteFiles(ndk, optionalPubKey || user.pubkey);
       logFiles(onlineFiles, options);
 
       const localFiles = await findAllLocalFiles(targetFolder);
-      console.log(`${localFiles.length} files found locally in ${targetFolder}`);
+      console.log(`${colors.count(localFiles.length)} files found locally in ${colors.filePath(targetFolder)}`);
       logFiles(localFiles, options);
 
       const { toTransfer, existing, toDelete } = await compareFileLists(onlineFiles, localFiles);
       console.log(
-        `${toTransfer.length} new files to download, ${existing.length} files unchanged, ${toDelete.length} files to delete locally.`,
+        `${colors.count(toTransfer.length)} new files to download, ${colors.count(existing.length)} files unchanged, ${colors.count(toDelete.length)} files to delete locally.`,
       );
 
+      console.log(colors.header("\nDownloading files:"));
       for (const file of toTransfer) {
         const filePath = path.join(targetFolder, file.remotePath);
         const dir = path.dirname(filePath);
@@ -306,7 +311,9 @@ program
           try {
             const content = await BlossomClient.downloadBlob(server, file.sha256);
             writeFileSync(filePath, Buffer.from(await content.arrayBuffer()));
-            log(`Downloaded ${file.remotePath} to ${filePath} from server ${server}`);
+            console.log(
+              formatFileStatus(file.remotePath, colors.success("✓ Downloaded"), `from ${colors.emphasis(server)}`),
+            );
             downloadSuccess = true; // Mark as successful
             break; // Exit loop on success
           } catch (error) {
@@ -314,9 +321,16 @@ program
           }
         }
         if (!downloadSuccess) {
-          log(`All attempts to download ${file.remotePath} failed.`);
+          console.log(formatFileStatus(file.remotePath, colors.error("✗ Failed"), "No servers available"));
         }
       }
+
+      console.log(colors.header("\nDownload Summary:"));
+      console.log(`- Total files: ${colors.count(toTransfer.length)}`);
+      const successfulCount =
+        toTransfer.length - toTransfer.filter((f) => !existsSync(path.join(targetFolder, f.remotePath))).length;
+      console.log(`- Successfully downloaded: ${colors.success(successfulCount)}`);
+      console.log(`- Failed: ${colors.error(toTransfer.length - successfulCount)}`);
       process.exit(0);
     },
   );
@@ -325,7 +339,7 @@ program.action(async (cmdObj) => {
   const projectData = await setupProject();
   if (projectData.privateKey)
     console.log(
-      `Project is set up with private key, ${projectData.relays.length} relays and ${projectData.servers.length} blossom servers.`,
+      `Project is set up with private key, ${colors.count(projectData.relays.length)} relays and ${colors.count(projectData.servers.length)} blossom servers.`,
     );
   program.help();
 });

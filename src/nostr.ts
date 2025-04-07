@@ -1,8 +1,9 @@
-import NDK, { NDKEvent, NDKKind, NDKPrivateKeySigner, NDKRelay, NDKRelayList, NDKRelaySet } from "@nostr-dev-kit/ndk";
-import { FileEntry, FileList } from "./types.js";
+import NDK, { NDKEvent, NDKKind, NDKRelayList, NDKRelaySet } from "@nostr-dev-kit/ndk";
 import { USER_BLOSSOM_SERVER_LIST_KIND } from "blossom-client-sdk";
 import debug from "debug";
+
 import { NSITE_BORADCAST_RELAYS, RELAY_DISCOVERY_RELAYS } from "./env.js";
+import { FileEntry, FileList } from "./types.js";
 
 const log = debug("nsite:nostr");
 
@@ -122,7 +123,7 @@ export async function publishProfile(ndk: NDK, profile: Profile) {
 }
 
 function removeRelayUrlPath(s: string) {
-  return s.replace(/(ws:\/\/|wss:\/\/[^\/]+)\/?.*$/, '$1');
+  return s.replace(/(ws:\/\/|wss:\/\/[^\/]+)\/?.*$/, "$1");
 }
 
 export async function fetchNip66ListOfRelayUrls() {
@@ -130,9 +131,7 @@ export async function fetchNip66ListOfRelayUrls() {
   ndk.connect();
   const events = await ndk.fetchEvents([{ kinds: [30166 as NDKKind] }], { closeOnEose: true });
   const uniqueRelayUrls = new Set(
-    [...events.values()]
-      .map((e) => e.tagValue("d"))
-      .map((s) => s && removeRelayUrlPath(s)),
+    [...events.values()].map((e) => e.tagValue("d")).map((s) => s && removeRelayUrlPath(s)),
   );
   return ([...uniqueRelayUrls.values()].filter((s) => !!s) as string[]).sort();
 }
